@@ -46,7 +46,7 @@ CONFIG = {
     "headless": os.getenv("NAUKRI_HEADLESS", "true").lower() == "true",
     "resume_source": os.getenv(
         "NAUKRI_RESUME_SOURCE",
-        r"C:\\Users\\user\\Desktop\\resume\\VriseTechResume1_08jun2026.pdf"
+        "./resume/VriseResume_15jun2026.pdf"
     ),
     "resume_filename_format": os.getenv(
         "NAUKRI_RESUME_FILENAME_FORMAT",
@@ -319,12 +319,10 @@ import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true", help="Run once and exit")
+    parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
     if args.once:
-        # Just run once (for GitHub Actions / cloud)
         asyncio.run(do_resume_upload())
     else:
-        # Run on schedule (for local PC)
         main()
