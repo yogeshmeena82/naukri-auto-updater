@@ -1,0 +1,101 @@
+2026-06-15 17:52:35,948 [INFO] =======================================================
+2026-06-15 17:52:35,950 [INFO]   Naukri Resume Auto-Updater STARTED
+2026-06-15 17:52:35,953 [INFO]   Schedule: 09:00, 13:00, 18:00
+2026-06-15 17:52:35,958 [INFO]   Resume source: ./resume/VriseResume_15jun2026.pdf
+2026-06-15 17:52:35,958 [INFO]   Log file: c:\Users\user\Desktop\naukri-auto-updater\resume_update_log.txt
+2026-06-15 17:52:35,960 [INFO] =======================================================
+2026-06-15 17:52:35,962 [INFO]   Scheduled at 09:00
+2026-06-15 17:52:35,962 [INFO]   Scheduled at 13:00
+2026-06-15 17:52:35,963 [INFO]   Scheduled at 18:00
+2026-06-15 17:52:35,964 [INFO] Running initial update now...
+2026-06-15 17:52:35,964 [INFO] Scheduled resume update triggered
+2026-06-15 17:52:35,967 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:18,706 [INFO] =======================================================
+2026-06-16 09:16:18,707 [INFO]   Naukri Resume Auto-Updater STARTED
+2026-06-16 09:16:18,707 [INFO]   Schedule: 09:00, 09:20, 13:00, 18:00
+2026-06-16 09:16:18,708 [INFO]   Resume source: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:18,709 [INFO]   Log file: c:\Users\user\Desktop\naukri-auto-updater\resume_update_log.txt
+2026-06-16 09:16:18,709 [INFO] =======================================================
+2026-06-16 09:16:18,710 [INFO]   Scheduled at 09:00
+2026-06-16 09:16:18,710 [INFO]   Scheduled at 09:20
+2026-06-16 09:16:18,710 [INFO]   Scheduled at 13:00
+2026-06-16 09:16:18,710 [INFO]   Scheduled at 18:00
+2026-06-16 09:16:18,711 [INFO] Running initial update now...
+2026-06-16 09:16:18,711 [INFO] Scheduled resume update triggered
+2026-06-16 09:16:18,713 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:19,162 [INFO] =======================================================
+2026-06-16 09:16:19,164 [INFO]   Naukri Resume Auto-Updater STARTED
+2026-06-16 09:16:19,170 [INFO]   Schedule: 09:00, 09:20, 13:00, 18:00
+2026-06-16 09:16:19,172 [INFO]   Resume source: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:19,172 [INFO]   Log file: c:\Users\user\Desktop\naukri-auto-updater\resume_update_log.txt
+2026-06-16 09:16:19,175 [INFO] =======================================================
+2026-06-16 09:16:19,180 [INFO]   Scheduled at 09:00
+2026-06-16 09:16:19,181 [INFO]   Scheduled at 09:20
+2026-06-16 09:16:19,182 [INFO]   Scheduled at 13:00
+2026-06-16 09:16:19,182 [INFO]   Scheduled at 18:00
+2026-06-16 09:16:19,183 [INFO] Running initial update now...
+2026-06-16 09:16:19,183 [INFO] Scheduled resume update triggered
+2026-06-16 09:16:19,185 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:20,563 [INFO] =======================================================
+2026-06-16 09:16:20,564 [INFO]   Naukri Resume Auto-Updater STARTED
+2026-06-16 09:16:20,565 [INFO]   Schedule: 09:00, 09:20, 13:00, 18:00
+2026-06-16 09:16:20,565 [INFO]   Resume source: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:20,565 [INFO]   Log file: c:\Users\user\Desktop\naukri-auto-updater\resume_update_log.txt
+2026-06-16 09:16:20,566 [INFO] =======================================================
+2026-06-16 09:16:20,566 [INFO]   Scheduled at 09:00
+2026-06-16 09:16:20,567 [INFO]   Scheduled at 09:20
+2026-06-16 09:16:20,568 [INFO]   Scheduled at 13:00
+2026-06-16 09:16:20,568 [INFO]   Scheduled at 18:00
+2026-06-16 09:16:20,570 [INFO] Running initial update now...
+2026-06-16 09:16:20,571 [INFO] Scheduled resume update triggered
+2026-06-16 09:16:20,574 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:21,258 [INFO] =======================================================
+2026-06-16 09:16:21,258 [INFO]   Naukri Resume Auto-Updater STARTED
+2026-06-16 09:16:21,258 [INFO]   Schedule: 09:00, 09:20, 13:00, 18:00
+2026-06-16 09:16:21,259 [INFO]   Resume source: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:16:21,259 [INFO]   Log file: c:\Users\user\Desktop\naukri-auto-updater\resume_update_log.txt
+2026-06-16 09:16:21,260 [INFO] =======================================================
+2026-06-16 09:16:21,261 [INFO]   Scheduled at 09:00
+2026-06-16 09:16:21,261 [INFO]   Scheduled at 09:20
+2026-06-16 09:16:21,262 [INFO]   Scheduled at 13:00
+2026-06-16 09:16:21,262 [INFO]   Scheduled at 18:00
+2026-06-16 09:16:21,262 [INFO] Running initial update now...
+2026-06-16 09:16:21,263 [INFO] Scheduled resume update triggered
+2026-06-16 09:16:21,264 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:20:18,719 [INFO] Scheduled resume update triggered
+2026-06-16 09:20:18,722 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:20:19,193 [INFO] Scheduled resume update triggered
+2026-06-16 09:20:19,196 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:20:20,586 [INFO] Scheduled resume update triggered
+2026-06-16 09:20:20,589 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:20:21,270 [INFO] Scheduled resume update triggered
+2026-06-16 09:20:21,273 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:37:12,328 [INFO] =======================================================
+2026-06-16 09:37:12,328 [INFO]   Naukri Resume Auto-Updater STARTED
+2026-06-16 09:37:12,328 [INFO]   Schedule: 09:00, 09:40, 13:00, 18:00
+2026-06-16 09:37:12,328 [INFO]   Resume source: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:37:12,329 [INFO]   Log file: c:\Users\user\Desktop\naukri-auto-updater\resume_update_log.txt
+2026-06-16 09:37:12,329 [INFO] =======================================================
+2026-06-16 09:37:12,330 [INFO]   Scheduled at 09:00
+2026-06-16 09:37:12,330 [INFO]   Scheduled at 09:40
+2026-06-16 09:37:12,330 [INFO]   Scheduled at 13:00
+2026-06-16 09:37:12,331 [INFO]   Scheduled at 18:00
+2026-06-16 09:37:12,331 [INFO] Running initial update now...
+2026-06-16 09:37:12,331 [INFO] Scheduled resume update triggered
+2026-06-16 09:37:12,333 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:40:12,337 [INFO] Scheduled resume update triggered
+2026-06-16 09:40:12,340 [ERROR] Resume file error: Resume file not found: ./resume/VriseResume_15jun2026.pdf
+2026-06-16 09:58:59,695 [INFO] =======================================================
+2026-06-16 09:58:59,696 [INFO]   Naukri Resume Auto-Updater STARTED
+2026-06-16 09:58:59,696 [INFO]   Schedule: 09:00, 09:40, 13:00, 18:00
+2026-06-16 09:58:59,697 [INFO]   Resume source: ./resume
+2026-06-16 09:58:59,697 [INFO]   Log file: c:\Users\user\Desktop\naukri-auto-updater\resume_update_log.txt
+2026-06-16 09:58:59,697 [INFO] =======================================================
+2026-06-16 09:58:59,698 [INFO]   Scheduled at 09:00
+2026-06-16 09:58:59,699 [INFO]   Scheduled at 09:40
+2026-06-16 09:58:59,699 [INFO]   Scheduled at 13:00
+2026-06-16 09:58:59,699 [INFO]   Scheduled at 18:00
+2026-06-16 09:58:59,699 [INFO] Running initial update now...
+2026-06-16 09:58:59,700 [INFO] Scheduled resume update triggered
+2026-06-16 09:58:59,705 [INFO] Resume copy ready: C:\Users\user\AppData\Local\Temp\naukri_resume_uploads\VriseResume_16jun2026.pdf
+2026-06-16 09:59:33,595 [INFO] DONE - Resume uploaded (no confirmation text detected): VriseResume_16jun2026.pdf

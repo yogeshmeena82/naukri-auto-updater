@@ -46,7 +46,7 @@ CONFIG = {
     "headless": os.getenv("NAUKRI_HEADLESS", "true").lower() == "true",
     "resume_source": os.getenv(
         "NAUKRI_RESUME_SOURCE",
-        "./resume/VriseResume_15jun2026.pdf"
+        "./resume"
     ),
     "resume_filename_format": os.getenv(
         "NAUKRI_RESUME_FILENAME_FORMAT",
@@ -55,7 +55,7 @@ CONFIG = {
 }
 
 # Schedule times (24-hour)
-SCHEDULE_TIMES = ["09:00", "13:00", "18:00"]
+SCHEDULE_TIMES = ["09:00", "09:40" , "13:00", "18:00"]
 
 # Log file
 LOG_FILE = os.path.join(SCRIPT_DIR, "resume_update_log.txt")
@@ -101,6 +101,37 @@ def get_daily_resume_filename(source_path: str, filename_format: str = None) -> 
 
 
 def resolve_resume_source_path(source_path: str) -> str:
+    if os.path.isfile(source_path):
+        return source_path
+
+    if os.path.exists(source_path) and os.path.isdir(source_path):
+        for name in ["resume.pdf", "Resume.pdf", "resume.docx", "Resume.docx"]:
+            candidate = os.path.join(source_path, name)
+            if os.path.isfile(candidate):
+                return candidate
+        matches = [
+            os.path.join(source_path, f)
+            for f in os.listdir(source_path)
+            if os.path.splitext(f)[1].lower() in {".pdf", ".docx", ".doc"}
+        ]
+        if matches:
+            return matches[0]
+        raise FileNotFoundError(f"No resume file found in: {source_path}")
+
+    if os.path.isdir(source_path):
+        for name in ["resume.pdf", "Resume.pdf", "resume.docx", "Resume.docx"]:
+            candidate = os.path.join(source_path, name)
+            if os.path.isfile(candidate):
+                return candidate
+        matches = [
+            os.path.join(source_path, f)
+            for f in os.listdir(source_path)
+            if os.path.splitext(f)[1].lower() in {".pdf", ".docx", ".doc"}
+        ]
+        if matches:
+            return matches[0]
+        raise FileNotFoundError(f"No resume file found in: {source_path}")
+    return source_path
     if os.path.isdir(source_path):
         for name in ["resume.pdf", "Resume.pdf", "resume.docx", "Resume.docx"]:
             candidate = os.path.join(source_path, name)
