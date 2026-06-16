@@ -99,3 +99,5 @@
 2026-06-16 09:58:59,700 [INFO] Scheduled resume update triggered
 2026-06-16 09:58:59,705 [INFO] Resume copy ready: C:\Users\user\AppData\Local\Temp\naukri_resume_uploads\VriseResume_16jun2026.pdf
 2026-06-16 09:59:33,595 [INFO] DONE - Resume uploaded (no confirmation text detected): VriseResume_16jun2026.pdf
+2026-06-16 10:16:44,889 [INFO] Resume copy ready: C:\Users\user\AppData\Local\Temp\naukri_resume_uploads\VriseResume_16jun2026.pdf
+2026-06-16 10:17:17,307 [INFO] DONE - Resume uploaded (no confirmation text detected): VriseResume_16jun2026.pdf

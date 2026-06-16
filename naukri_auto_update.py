@@ -55,7 +55,7 @@ CONFIG = {
 }
 
 # Schedule times (24-hour)
-SCHEDULE_TIMES = ["09:00", "09:40" , "13:00", "18:00"]
+SCHEDULE_TIMES = ["09:00",  "09:40", "13:00", "18:00"]
 
 # Log file
 LOG_FILE = os.path.join(SCRIPT_DIR, "resume_update_log.txt")
