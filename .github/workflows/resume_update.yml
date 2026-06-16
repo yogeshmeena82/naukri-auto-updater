@@ -32,6 +32,6 @@ jobs:
           NAUKRI_EMAIL: ${{ secrets.NAUKRI_EMAIL }}
           NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
           NAUKRI_HEADLESS: "true"
-          NAUKRI_RESUME_SOURCE: "C:\\Users\\user\\Desktop\\naukri-auto-updater\\resume\\VriseResume_15jun2026.pdf.pdf"
+          NAUKRI_RESUME_SOURCE: "resume/"
           NAUKRI_RESUME_FILENAME_FORMAT: "VriseResume_{day}{mon}{year}"
         run: python naukri_auto_update.py --once
