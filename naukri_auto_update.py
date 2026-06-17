@@ -270,28 +270,61 @@ async def do_resume_upload():
             await page.wait_for_timeout(2000)
 
             file_input = None
-            for selector in [
+            
+            # Try various file input selectors
+            selectors_to_try = [
                 'input[type="file"]',
-                'input[name*="resume"]',
-                'input[id*="resume"]',
-                'input[class*="resume"]',
-            ]:
-                file_input = await page.query_selector(selector)
-                if file_input:
-                    break
+                'input[name*="resume" i]',
+                'input[id*="resume" i]',
+                'input[class*="resume" i]',
+                'input[accept*="pdf" i]',
+                'input[accept*="doc" i]',
+                '#fileInput',
+                '[data-qa-id="resumeUpload"]',
+            ]
+            
+            for selector in selectors_to_try:
+                try:
+                    file_input = await page.query_selector(selector)
+                    if file_input:
+                        log.info(f"Found file input with selector: {selector}")
+                        break
+                except:
+                    continue
 
+            # If not found, try clicking upload button first
             if not file_input:
-                upload_btn = await page.query_selector('button:has-text("Upload Resume")')
-                if upload_btn:
-                    await upload_btn.click()
-                    await page.wait_for_timeout(1000)
-                    for selector in ['input[type="file"]', 'input[name*="resume"]']:
+                upload_selectors = [
+                    'button:has-text("Upload Resume")',
+                    'button:has-text("Upload")',
+                    'button[data-qa-id="resumeUpload"]',
+                    '.resumeUploadBtn',
+                    '[class*="upload" i]',
+                ]
+                for btn_selector in upload_selectors:
+                    try:
+                        upload_btn = await page.query_selector(btn_selector)
+                        if upload_btn:
+                            log.info(f"Clicking upload button with selector: {btn_selector}")
+                            await upload_btn.click()
+                            await page.wait_for_timeout(1500)
+                            break
+                    except:
+                        continue
+                
+                # Try finding file input again after button click
+                for selector in selectors_to_try:
+                    try:
                         file_input = await page.query_selector(selector)
                         if file_input:
+                            log.info(f"Found file input after button click: {selector}")
                             break
+                    except:
+                        continue
 
             if not file_input:
                 log.error("FAILED - Resume upload field not found on Naukri profile page")
+                log.error("Available page content might have changed. Check Naukri.com manually.")
                 return
 
             await file_input.set_input_files(resume_file)
