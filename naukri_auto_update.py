@@ -237,6 +237,87 @@ async def ensure_logged_in(page) -> bool:
 # Core resume upload
 # ─────────────────────────────────────────────
 
+async def dump_failed_page(page, name: str):
+    try:
+        debug_dir = os.path.join(tempfile.gettempdir(), "naukri_resume_debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        html_path = os.path.join(debug_dir, f"{name}.html")
+        png_path = os.path.join(debug_dir, f"{name}.png")
+        content = await page.content()
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        await page.screenshot(path=png_path, full_page=True)
+        log.info(f"Saved debug page HTML: {html_path}")
+        log.info(f"Saved debug page screenshot: {png_path}")
+    except Exception as e:
+        log.error(f"Failed to save debug page: {e}")
+
+
+async def find_file_input(page):
+    selectors_to_try = [
+        'input[type="file"]',
+        'input[name*="resume" i]',
+        'input[id*="resume" i]',
+        'input[class*="resume" i]',
+        'input[name*="upload" i]',
+        'input[id*="upload" i]',
+        'input[class*="upload" i]',
+        'input[accept*="pdf" i]',
+        'input[accept*="doc" i]',
+        'input[title*="resume" i]',
+        'input[placeholder*="resume" i]',
+    ]
+    for selector in selectors_to_try:
+        try:
+            file_input = await page.query_selector(selector)
+            if file_input:
+                log.info(f"Found file input with selector: {selector}")
+                return file_input
+        except Exception:
+            continue
+    for frame in page.frames:
+        for selector in selectors_to_try:
+            try:
+                file_input = await frame.query_selector(selector)
+                if file_input:
+                    log.info(f"Found file input in frame with selector: {selector}")
+                    return file_input
+            except Exception:
+                continue
+    return None
+
+
+async def click_upload_trigger(page):
+    upload_selectors = [
+        'button:has-text("Upload Resume")',
+        'a:has-text("Upload Resume")',
+        'button:has-text("Upload")',
+        'a:has-text("Upload")',
+        'button:has-text("Update Resume")',
+        'a:has-text("Update Resume")',
+        'button:has-text("Add Resume")',
+        'a:has-text("Add Resume")',
+        'button:has-text("Change Resume")',
+        'a:has-text("Change Resume")',
+        '[data-qa-id="resumeUpload"]',
+        '[data-testid="resume-upload"]',
+        '[class*="upload" i]',
+        '[class*="resume" i] button',
+        'text="Upload Resume"',
+    ]
+    for selector in upload_selectors:
+        try:
+            upload_btn = await page.query_selector(selector)
+            if upload_btn:
+                log.info(f"Clicking upload trigger selector: {selector}")
+                await upload_btn.click()
+                await page.wait_for_timeout(2000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def do_resume_upload():
     source_path     = CONFIG["resume_source"]
     filename_format = CONFIG["resume_filename_format"]
@@ -267,68 +348,22 @@ async def do_resume_upload():
 
             await page.goto("https://www.naukri.com/mnjuser/profile")
             await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(3000)
 
-            file_input = None
-            
-            # Try various file input selectors
-            selectors_to_try = [
-                'input[type="file"]',
-                'input[name*="resume" i]',
-                'input[id*="resume" i]',
-                'input[class*="resume" i]',
-                'input[accept*="pdf" i]',
-                'input[accept*="doc" i]',
-                '#fileInput',
-                '[data-qa-id="resumeUpload"]',
-            ]
-            
-            for selector in selectors_to_try:
-                try:
-                    file_input = await page.query_selector(selector)
-                    if file_input:
-                        log.info(f"Found file input with selector: {selector}")
-                        break
-                except:
-                    continue
-
-            # If not found, try clicking upload button first
+            file_input = await find_file_input(page)
             if not file_input:
-                upload_selectors = [
-                    'button:has-text("Upload Resume")',
-                    'button:has-text("Upload")',
-                    'button[data-qa-id="resumeUpload"]',
-                    '.resumeUploadBtn',
-                    '[class*="upload" i]',
-                ]
-                for btn_selector in upload_selectors:
-                    try:
-                        upload_btn = await page.query_selector(btn_selector)
-                        if upload_btn:
-                            log.info(f"Clicking upload button with selector: {btn_selector}")
-                            await upload_btn.click()
-                            await page.wait_for_timeout(1500)
-                            break
-                    except:
-                        continue
-                
-                # Try finding file input again after button click
-                for selector in selectors_to_try:
-                    try:
-                        file_input = await page.query_selector(selector)
-                        if file_input:
-                            log.info(f"Found file input after button click: {selector}")
-                            break
-                    except:
-                        continue
+                clicked = await click_upload_trigger(page)
+                if clicked:
+                    file_input = await find_file_input(page)
 
             if not file_input:
                 log.error("FAILED - Resume upload field not found on Naukri profile page")
-                log.error("Available page content might have changed. Check Naukri.com manually.")
+                await dump_failed_page(page, "naukri_upload_failure")
+                log.error("Saved page HTML and screenshot for debugging.")
                 return
 
             await file_input.set_input_files(resume_file)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(5000)
 
             confirmed = False
             for text in ["resume uploaded", "upload successful", "resume updated", "uploaded successfully"]:
@@ -345,6 +380,7 @@ async def do_resume_upload():
 
         except Exception as e:
             log.error(f"ERROR during upload: {e}")
+            await dump_failed_page(page, "naukri_upload_exception")
         finally:
             await page.close()
             await browser.close()
