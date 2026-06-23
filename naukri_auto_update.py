@@ -220,6 +220,67 @@ async def detect_bot_block(page) -> str | None:
 # Playwright login (copied from your server.py, with stealth + cookie handling)
 # ─────────────────────────────────────────────
 
+async def _fill_field(page, selectors: list[str], value: str, field_label: str) -> bool:
+    """
+    Try each CSS selector in turn. For each, also attempt a JS-based
+    querySelector as a fallback so React-rendered inputs (which may not
+    be in the DOM yet when wait_for_selector fires) are still found.
+    Returns True if the field was successfully filled.
+    """
+    # First pass: Playwright wait_for_selector (handles elements that appear after JS loads)
+    for selector in selectors:
+        try:
+            field = await page.wait_for_selector(selector, timeout=15000, state="visible")
+            if field:
+                await field.scroll_into_view_if_needed()
+                await field.click()
+                await page.wait_for_timeout(300)
+                await field.fill(value)
+                log.info(f"Filled {field_label} with selector: {selector}")
+                return True
+        except Exception:
+            continue
+
+    # Second pass: JS querySelector across all frames (catches shadow-DOM-adjacent patterns)
+    for selector in selectors:
+        try:
+            filled = await page.evaluate(f"""
+                (function() {{
+                    const el = document.querySelector('{selector.replace("'", "\\'")}');
+                    if (!el) return false;
+                    el.focus();
+                    el.value = '';
+                    // React/Vue track value via nativeInputValueSetter
+                    const nativeSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value'
+                    ).set;
+                    nativeSetter.call(el, arguments[0]);
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return true;
+                }})()
+            """, value)
+            if filled:
+                log.info(f"Filled {field_label} via JS with selector: {selector}")
+                return True
+        except Exception:
+            continue
+
+    log.warning(f"Could not fill {field_label} — dumping all visible inputs for diagnosis:")
+    try:
+        inputs_info = await page.evaluate("""
+            () => Array.from(document.querySelectorAll('input')).map(el => ({
+                type: el.type, name: el.name, id: el.id,
+                placeholder: el.placeholder, className: el.className.slice(0, 80)
+            }))
+        """)
+        for inp in inputs_info:
+            log.warning(f"  INPUT: {inp}")
+    except Exception as e:
+        log.warning(f"  (Could not enumerate inputs: {e})")
+    return False
+
+
 async def naukri_login(page) -> tuple[bool, str | None]:
     """Returns (success, failure_reason)."""
     try:
@@ -227,6 +288,9 @@ async def naukri_login(page) -> tuple[bool, str | None]:
         await page.wait_for_load_state("domcontentloaded", timeout=6000)
     except PlaywrightTimeout:
         pass
+
+    # Give React time to render the login form
+    await page.wait_for_timeout(3000)
 
     block = await detect_bot_block(page)
     if block:
@@ -237,49 +301,74 @@ async def naukri_login(page) -> tuple[bool, str | None]:
     if "login" not in page.url and "nlogin" not in page.url:
         return True, None
 
-    email_filled = False
-    for selector in [
+    # ── Email field ──────────────────────────────────────────────────────────
+    # Ordered from most-specific (current Naukri markup) to broadest fallback.
+    email_selectors = [
         'input[placeholder="Enter your active Email ID / Username"]',
-        'input[type="email"]', 'input[name="username"]', '#usernameField',
-    ]:
-        try:
-            field = await page.wait_for_selector(selector, timeout=20000)
-            await field.click()
-            await field.fill(CONFIG["email"])
-            email_filled = True
-            break
-        except PlaywrightTimeout:
-            continue
+        'input[placeholder*="Email" i]',
+        'input[placeholder*="email" i]',
+        'input[placeholder*="Username" i]',
+        'input[type="email"]',
+        'input[name="username"]',
+        'input[name="email"]',
+        '#usernameField',
+        '#username',
+        '#emailField',
+        'input[autocomplete="username"]',
+        'input[autocomplete="email"]',
+        # Naukri sometimes uses a generic text field for email
+        'form input[type="text"]:first-of-type',
+        'div[class*="login"] input[type="text"]',
+        'div[class*="Login"] input[type="text"]',
+    ]
+    email_filled = await _fill_field(page, email_selectors, CONFIG["email"], "email")
 
-    password_filled = False
-    for selector in [
+    # ── Password field ───────────────────────────────────────────────────────
+    password_selectors = [
         'input[placeholder="Enter your password"]',
-        'input[type="password"]', 'input[name="password"]', '#passwordField',
-    ]:
-        try:
-            field = await page.wait_for_selector(selector, timeout=20000)
-            await field.click()
-            await field.fill(CONFIG["password"])
-            password_filled = True
-            break
-        except PlaywrightTimeout:
-            continue
+        'input[placeholder*="password" i]',
+        'input[placeholder*="Password" i]',
+        'input[type="password"]',
+        'input[name="password"]',
+        '#passwordField',
+        '#password',
+        'input[autocomplete="current-password"]',
+        'div[class*="login"] input[type="password"]',
+        'div[class*="Login"] input[type="password"]',
+    ]
+    password_filled = await _fill_field(page, password_selectors, CONFIG["password"], "password")
 
     if not email_filled or not password_filled:
-        return False, "Could not find email/password fields (selectors may be outdated)"
+        missing = []
+        if not email_filled:
+            missing.append("email")
+        if not password_filled:
+            missing.append("password")
+        return False, f"Could not find {' and '.join(missing)} field(s) — check debug dump for actual inputs on the page"
 
+    # ── Submit button ────────────────────────────────────────────────────────
+    submit_selectors = [
+        'button[type="submit"]',
+        'button.loginButton',
+        'button[class*="login" i]',
+        'button[class*="Login"]',
+        'button:has-text("Login")',
+        'button:has-text("Sign in")',
+        'button:has-text("Sign In")',
+        'input[type="submit"]',
+        'div[class*="login"] button',
+    ]
     clicked_submit = False
-    for selector in [
-        'button[type="submit"]', 'button.loginButton',
-        'button:has-text("Login")', 'input[type="submit"]',
-    ]:
+    for selector in submit_selectors:
         try:
-            btn = await page.wait_for_selector(selector, timeout=20000)
+            btn = await page.wait_for_selector(selector, timeout=4000, state="visible")
             if btn:
+                await btn.scroll_into_view_if_needed()
                 await btn.click()
                 clicked_submit = True
+                log.info(f"Clicked submit with selector: {selector}")
                 break
-        except PlaywrightTimeout:
+        except Exception:
             continue
 
     if not clicked_submit:
@@ -294,13 +383,12 @@ async def naukri_login(page) -> tuple[bool, str | None]:
     try:
         await page.wait_for_url(
             lambda url: "login" not in url and "nlogin" not in url,
-            timeout=30000
+            timeout=3000
         )
     except PlaywrightTimeout:
         pass
 
     if "login" in page.url or "nlogin" in page.url:
-        # Check once more for a bot block / wrong-credentials message before giving up.
         block = await detect_bot_block(page)
         if block:
             return False, block
@@ -311,8 +399,8 @@ async def naukri_login(page) -> tuple[bool, str | None]:
 
 async def ensure_logged_in(page) -> tuple[bool, str | None]:
     try:
-        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=45000)
-        await page.wait_for_load_state("domcontentloaded", timeout=45000)
+        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=4500)
+        await page.wait_for_load_state("domcontentloaded", timeout=4500)
         if "mnjuser" in page.url and "login" not in page.url:
             return True, None
     except PlaywrightTimeout:
@@ -351,7 +439,7 @@ async def dump_failed_page(page, name: str):
         log.info(f"Saved debug page HTML: {html_path}")
         # Viewport-only screenshot (not full_page) - much less likely to hang
         # waiting for the entire page's resources/layout to settle.
-        await page.screenshot(path=png_path, full_page=False, timeout=10000, animations="disabled")
+        await page.screenshot(path=png_path, full_page=False, timeout=4000, animations="disabled")
         log.info(f"Saved debug page screenshot: {png_path}")
     except Exception as e:
         log.error(f"Failed to save debug screenshot (non-fatal, continuing): {e}")
