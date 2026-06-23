@@ -67,6 +67,10 @@ CONFIG = {
         "NAUKRI_RESUME_FILENAME_FORMAT",
         "VriseResume_{day}{mon}{year}"
     ),
+    # Optional residential proxy, e.g. http://proxy.provider.com:12321
+    "proxy_server":   os.getenv("PROXY_SERVER", "").strip(),
+    "proxy_username": os.getenv("PROXY_USERNAME", "").strip(),
+    "proxy_password": os.getenv("PROXY_PASSWORD", "").strip(),
 }
 
 # Schedule times (24-hour)
@@ -412,14 +416,26 @@ async def do_resume_upload() -> int:
         return 1
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=CONFIG["headless"],
-            args=[
+        launch_kwargs = {
+            "headless": CONFIG["headless"],
+            "args": [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled",
             ],
-        )
+        }
+        if CONFIG["proxy_server"]:
+            proxy_config = {"server": CONFIG["proxy_server"]}
+            if CONFIG["proxy_username"]:
+                proxy_config["username"] = CONFIG["proxy_username"]
+            if CONFIG["proxy_password"]:
+                proxy_config["password"] = CONFIG["proxy_password"]
+            launch_kwargs["proxy"] = proxy_config
+            log.info(f"Using proxy: {CONFIG['proxy_server']}")
+        else:
+            log.info("No proxy configured - connecting directly")
+
+        browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
