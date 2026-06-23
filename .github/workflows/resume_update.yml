@@ -31,6 +31,9 @@ jobs:
           NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
           NAUKRI_HEADLESS: "true"
           NAUKRI_RESUME_SOURCE: "./resume.pdf"
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
         run: python naukri_auto_update.py --once
 
       - name: Upload debug artifacts on failure
