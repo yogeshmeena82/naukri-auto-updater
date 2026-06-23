@@ -84,6 +84,14 @@ LOG_FILE = os.path.join(SCRIPT_DIR, "resume_update_log.txt")
 DEBUG_DIR = os.path.join(tempfile.gettempdir(), "naukri_resume_debug")
 
 # ─────────────────────────────────────────────
+# Timeouts — generous to handle slow proxies
+# ─────────────────────────────────────────────
+GOTO_TIMEOUT      = 90_000   # 90s page load
+DOM_TIMEOUT       = 90_000   # 90s wait for domcontentloaded
+SELECTOR_TIMEOUT  = 30_000   # 30s per selector wait
+BODY_TEXT_TIMEOUT = 15_000   # 15s for body text read
+
+# ─────────────────────────────────────────────
 # Logging setup — UTF-8 forced to avoid cp1252 errors on Windows
 # ─────────────────────────────────────────────
 file_handler   = logging.FileHandler(LOG_FILE, encoding="utf-8")
@@ -113,7 +121,7 @@ def gha_error(message: str):
 
 
 # ─────────────────────────────────────────────
-# Resume helpers (copied from your server.py)
+# Resume helpers
 # ─────────────────────────────────────────────
 
 def get_daily_resume_filename(source_path: str, filename_format: str = None) -> str:
@@ -183,12 +191,6 @@ Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
 Object.defineProperty(navigator, 'product', { get: () => 'Gecko' });
 Object.defineProperty(navigator, 'productSub', { get: () => '20030107' });
 Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
-Object.defineProperty(navigator, 'permissions', {
-    get: () => ({
-        query: (parameters) =>
-            Promise.resolve({ state: 'prompt', onchange: null }),
-    }),
-});
 window.navigator.userAgentData = {
     brands: [{ brand: 'Chromium', version: '124' }, { brand: 'Google Chrome', version: '124' }],
     mobile: false,
@@ -198,7 +200,6 @@ window.navigator.userAgentData = {
 
 
 async def dismiss_cookie_banner(page):
-    """Cookie/consent overlays can silently swallow clicks on the fields behind them."""
     for selector in [
         'button:has-text("Accept")',
         'button:has-text("I Accept")',
@@ -217,7 +218,6 @@ async def dismiss_cookie_banner(page):
 
 
 async def detect_bot_block(page) -> str | None:
-    """Returns a description if Naukri appears to be showing a CAPTCHA / block page, else None."""
     try:
         content = (await page.content()).lower()
     except Exception:
@@ -230,8 +230,6 @@ async def detect_bot_block(page) -> str | None:
         "request blocked": "Access blocked by Naukri / bot detection",
         "verify you are human": "Human-verification challenge detected",
         "forbidden": "Access forbidden page detected",
-        "not authorized": "Access denied page detected",
-        "you don't have permission": "Permission denied page detected",
     }
     for needle, description in indicators.items():
         if needle in content:
@@ -239,49 +237,45 @@ async def detect_bot_block(page) -> str | None:
     return None
 
 
-async def is_blocked_page(page) -> tuple[bool, str | None]:
-    """Detect a blocked / access-denied landing page before trying selectors."""
-    try:
-        title = (await page.title() or "").lower()
-        if any(blocked in title for blocked in ["access denied", "blocked", "forbidden", "error"]):
-            return True, f"Blocked page detected by title: {title}"
-    except Exception:
-        pass
-
-    try:
-        body = (await page.text_content("body") or "").lower()
-        if any(blocked in body for blocked in ["access denied", "blocked", "forbidden", "request blocked"]):
-            return True, "Blocked page detected by body text"
-    except Exception:
-        pass
-
-    return False, None
-
-
-async def wait_for_any_selector(page, selectors, timeout=10000):
-    """Wait for the first matching element in a CSS selector list."""
+async def wait_for_any_selector(page, selectors, timeout=SELECTOR_TIMEOUT):
+    """Wait for the first matching element from a list of selectors."""
     selector = ", ".join(selectors)
     try:
-        return await page.wait_for_selector(selector, timeout=timeout)
+        return await page.wait_for_selector(selector, timeout=timeout, state="visible")
     except PlaywrightTimeout:
         return None
 
 
+async def safe_body_text(page) -> str:
+    """Read body text with a short timeout so a slow proxy doesn't hang indefinitely."""
+    try:
+        return (await page.text_content("body", timeout=BODY_TEXT_TIMEOUT)) or ""
+    except Exception:
+        return ""
+
+
 # ─────────────────────────────────────────────
-# Playwright login (copied from your server.py, with stealth + cookie handling)
+# Login
 # ─────────────────────────────────────────────
 
 async def naukri_login(page) -> tuple[bool, str | None]:
     """Returns (success, failure_reason)."""
+    log.info("Navigating to Naukri login page...")
     try:
-        await page.goto("https://www.naukri.com/nlogin/login", timeout=30000)
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        await page.goto("https://www.naukri.com/nlogin/login", timeout=GOTO_TIMEOUT)
+        await page.wait_for_load_state("domcontentloaded", timeout=DOM_TIMEOUT)
     except PlaywrightTimeout:
-        pass
+        log.warning("Timed out waiting for login page load — continuing anyway")
 
-    blocked, reason = await is_blocked_page(page)
-    if blocked:
-        return False, reason
+    # Log what actually loaded so we know immediately if it's a blank/block page
+    try:
+        title = await page.title()
+        log.info(f"Login page loaded. Title: {title!r}  URL: {page.url}")
+    except Exception:
+        log.warning("Could not read page title after goto")
+
+    # Extra wait for React to render the form
+    await page.wait_for_timeout(5000)
 
     block = await detect_bot_block(page)
     if block:
@@ -290,53 +284,85 @@ async def naukri_login(page) -> tuple[bool, str | None]:
     await dismiss_cookie_banner(page)
 
     if "login" not in page.url and "nlogin" not in page.url:
+        log.info("Already logged in (redirected away from login page)")
         return True, None
 
+    # ── Email ────────────────────────────────────────────────────────────────
     email_selectors = [
         'input#usernameField',
         'input[placeholder*="Email" i]',
         'input[placeholder*="Username" i]',
         'input[type="email"]',
         'input[name*="user" i]',
+        'input[autocomplete="username"]',
+        'input[autocomplete="email"]',
+        'form input[type="text"]',
     ]
-    email_field = await wait_for_any_selector(page, email_selectors, timeout=10000)
+    log.info("Looking for email field...")
+    email_field = await wait_for_any_selector(page, email_selectors, timeout=SELECTOR_TIMEOUT)
     if email_field:
         await email_field.click()
         await email_field.fill(CONFIG["email"])
+        log.info("Email field filled.")
+    else:
+        # Dump what inputs exist so we can fix selectors next time
+        try:
+            inputs = await page.evaluate("""
+                () => Array.from(document.querySelectorAll('input')).map(el => ({
+                    type: el.type, name: el.name, id: el.id,
+                    placeholder: el.placeholder,
+                    class: el.className.slice(0, 80)
+                }))
+            """)
+            log.error("Email field NOT found. Inputs currently on page:")
+            for inp in inputs:
+                log.error(f"  {inp}")
+        except Exception as e:
+            log.error(f"Could not enumerate inputs: {e}")
 
+    # ── Password ─────────────────────────────────────────────────────────────
     password_selectors = [
         'input#passwordField',
         'input[placeholder*="Password" i]',
         'input[type="password"]',
         'input[name*="pass" i]',
+        'input[autocomplete="current-password"]',
     ]
-    password_field = await wait_for_any_selector(page, password_selectors, timeout=10000)
+    log.info("Looking for password field...")
+    password_field = await wait_for_any_selector(page, password_selectors, timeout=SELECTOR_TIMEOUT)
     if password_field:
         await password_field.click()
         await password_field.fill(CONFIG["password"])
+        log.info("Password field filled.")
 
     if not email_field or not password_field:
-        content = (await page.content()).lower()
-        if any(term in content for term in ["access denied", "blocked", "forbidden", "request blocked", "not authorized", "you don't have permission"]):
-            return False, "Access denied / blocked page detected"
-        return False, "Could not find email/password fields (selectors may be outdated)"
+        missing = []
+        if not email_field:
+            missing.append("email")
+        if not password_field:
+            missing.append("password")
+        return False, f"Could not find {' and '.join(missing)} field(s) — check logged inputs above"
 
+    # ── Submit ───────────────────────────────────────────────────────────────
     submit_selectors = [
         'button[type="submit"]',
         'button.loginButton',
         'button:has-text("Login")',
+        'button:has-text("Sign in")',
         'input[type="submit"]',
     ]
-    submit_button = await wait_for_any_selector(page, submit_selectors, timeout=10000)
+    log.info("Looking for submit button...")
+    submit_button = await wait_for_any_selector(page, submit_selectors, timeout=SELECTOR_TIMEOUT)
     if not submit_button:
-        return False, "Could not find/click the login submit button"
+        return False, "Could not find the login submit button"
 
     await submit_button.click()
+    log.info("Submit clicked, waiting for redirect...")
 
     try:
         await page.wait_for_url(
             lambda url: "login" not in url and "nlogin" not in url,
-            timeout=15000,
+            timeout=30_000,
         )
     except PlaywrightTimeout:
         pass
@@ -348,14 +374,16 @@ async def naukri_login(page) -> tuple[bool, str | None]:
     if "login" in page.url or "nlogin" in page.url:
         return False, "Still on login page after submit (wrong credentials, or page changed)"
 
+    log.info(f"Login successful. Now at: {page.url}")
     return True, None
 
 
 async def ensure_logged_in(page) -> tuple[bool, str | None]:
     try:
-        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=20000)
-        await page.wait_for_load_state("domcontentloaded", timeout=20000)
+        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=GOTO_TIMEOUT)
+        await page.wait_for_load_state("domcontentloaded", timeout=DOM_TIMEOUT)
         if "mnjuser" in page.url and "login" not in page.url:
+            log.info("Session already active, skipped login.")
             return True, None
     except PlaywrightTimeout:
         pass
@@ -367,8 +395,6 @@ async def ensure_logged_in(page) -> tuple[bool, str | None]:
 # ─────────────────────────────────────────────
 
 async def dump_failed_page(page, name: str):
-    # Log title/URL/text snippet straight into the run log first - this works
-    # even if the screenshot step below fails, and needs no artifact download.
     try:
         title = await page.title()
         log.info(f"[{name}] Page title: {title!r}")
@@ -376,33 +402,25 @@ async def dump_failed_page(page, name: str):
     except Exception as e:
         log.error(f"[{name}] Could not read page title/url: {e}")
 
-    try:
-        body_text = await page.text_content("body")
-        if body_text:
-            snippet = " ".join(body_text.split())[:600]
-            log.info(f"[{name}] Page text snippet: {snippet!r}")
-        else:
-            log.info(f"[{name}] Page body text was empty")
-    except Exception as e:
-        log.error(f"[{name}] Could not read page body text: {e}")
+    body_text = await safe_body_text(page)
+    if body_text:
+        snippet = " ".join(body_text.split())[:600]
+        log.info(f"[{name}] Page text snippet: {snippet!r}")
+    else:
+        log.info(f"[{name}] Page body text was empty or timed out")
 
     try:
         os.makedirs(DEBUG_DIR, exist_ok=True)
         html_path = os.path.join(DEBUG_DIR, f"{name}.html")
-        png_path = os.path.join(DEBUG_DIR, f"{name}.png")
+        png_path  = os.path.join(DEBUG_DIR, f"{name}.png")
         content = await page.content()
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(content)
-        log.info(f"Saved debug page HTML: {html_path}")
-        await page.screenshot(
-            path=png_path,
-            full_page=False,
-            timeout=20000,
-            animations="disabled",
-        )
-        log.info(f"Saved debug page screenshot: {png_path}")
+        log.info(f"Saved debug HTML: {html_path}")
+        await page.screenshot(path=png_path, full_page=False, timeout=15_000, animations="disabled")
+        log.info(f"Saved debug screenshot: {png_path}")
     except Exception as e:
-        log.error(f"Failed to save debug screenshot (non-fatal, continuing): {e}")
+        log.error(f"Failed to save debug artifacts (non-fatal): {e}")
 
 
 async def find_file_input(page):
@@ -413,31 +431,26 @@ async def find_file_input(page):
         'input[class*="resume" i]',
         'input[name*="upload" i]',
         'input[id*="upload" i]',
-        'input[class*="upload" i]',
         'input[accept*="pdf" i]',
         'input[accept*="doc" i]',
-        'input[title*="resume" i]',
-        'input[placeholder*="resume" i]',
     ]
     for selector in selectors_to_try:
         try:
-            file_input = await page.query_selector(selector)
-            if file_input:
-                log.info(f"Found file input with selector: {selector}")
-                return file_input
+            el = await page.query_selector(selector)
+            if el:
+                log.info(f"Found file input: {selector}")
+                return el
         except Exception:
             continue
-
     for frame in page.frames:
         for selector in selectors_to_try:
             try:
-                file_input = await frame.query_selector(selector)
-                if file_input:
-                    log.info(f"Found file input in frame with selector: {selector}")
-                    return file_input
+                el = await frame.query_selector(selector)
+                if el:
+                    log.info(f"Found file input in frame: {selector}")
+                    return el
             except Exception:
                 continue
-
     return None
 
 
@@ -445,34 +458,26 @@ async def click_upload_trigger(page):
     upload_selectors = [
         'button:has-text("Upload Resume")',
         'a:has-text("Upload Resume")',
-        'button:has-text("Upload")',
-        'a:has-text("Upload")',
         'button:has-text("Update Resume")',
         'a:has-text("Update Resume")',
-        'button:has-text("Add Resume")',
-        'a:has-text("Add Resume")',
-        'button:has-text("Change Resume")',
-        'a:has-text("Change Resume")',
+        'button:has-text("Upload")',
         '[data-qa-id="resumeUpload"]',
         '[data-testid="resume-upload"]',
-        '[class*="upload" i]',
-        '[class*="resume" i] button',
-        'text="Upload Resume"',
     ]
     for selector in upload_selectors:
         try:
-            upload_btn = await page.query_selector(selector)
-            if upload_btn:
-                log.info(f"Clicking upload trigger selector: {selector}")
-                await upload_btn.click()
-                await page.wait_for_timeout(1000)
+            btn = await page.query_selector(selector)
+            if btn:
+                log.info(f"Clicking upload trigger: {selector}")
+                await btn.click()
+                await page.wait_for_timeout(1500)
                 return True
         except Exception:
             continue
     return False
 
 
-async def launch_naukri_browser(p, use_proxy: bool):
+async def launch_browser(p, use_proxy: bool):
     launch_kwargs = {
         "headless": CONFIG["headless"],
         "args": [
@@ -480,7 +485,6 @@ async def launch_naukri_browser(p, use_proxy: bool):
             "--disable-setuid-sandbox",
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
-            "--disable-features=IsolateOrigins,site-per-process",
             "--window-size=1920,1080",
         ],
     }
@@ -489,22 +493,20 @@ async def launch_naukri_browser(p, use_proxy: bool):
         if proxy_username and "-session-" not in proxy_username:
             session_id = uuid.uuid4().hex[:10]
             proxy_username = f"{proxy_username}-session-{session_id}"
-            log.info(f"Pinning proxy to a sticky session: ...-session-{session_id}")
-        proxy_config = {"server": CONFIG["proxy_server"]}
+            log.info(f"Proxy sticky session: ...{session_id}")
+        proxy_cfg = {"server": CONFIG["proxy_server"]}
         if proxy_username:
-            proxy_config["username"] = proxy_username
+            proxy_cfg["username"] = proxy_username
         if CONFIG["proxy_password"]:
-            proxy_config["password"] = CONFIG["proxy_password"]
-        launch_kwargs["proxy"] = proxy_config
+            proxy_cfg["password"] = CONFIG["proxy_password"]
+        launch_kwargs["proxy"] = proxy_cfg
         log.info(f"Using proxy: {CONFIG['proxy_server']}")
-    elif use_proxy:
-        log.info("Proxy configured but no proxy server is provided; connecting directly")
     else:
-        log.info("Connecting directly without proxy")
+        log.info("Connecting directly (no proxy)")
     return await p.chromium.launch(**launch_kwargs)
 
 
-async def create_naukri_context(browser):
+async def create_context(browser):
     return await browser.new_context(
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -513,100 +515,96 @@ async def create_naukri_context(browser):
         viewport={"width": 1920, "height": 1080},
         locale="en-US",
         timezone_id="Asia/Kolkata",
-        extra_http_headers={
-            "accept-language": "en-US,en;q=0.9",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "upgrade-insecure-requests": "1",
-            "sec-fetch-site": "none",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-user": "?1",
-            "sec-fetch-dest": "document",
-        },
         ignore_https_errors=True,
     )
 
 
-async def do_resume_upload() -> int:
-    """Returns a process exit code: 0 = success/ambiguous-but-ok, 1 = confirmed failure."""
-    source_path     = CONFIG["resume_source"]
-    filename_format = CONFIG["resume_filename_format"]
+async def run_upload_attempt(p, resume_file: str, use_proxy: bool) -> int:
+    label = "proxy" if use_proxy else "direct"
+    log.info(f"--- Attempt: {label} ---")
+
+    browser = await launch_browser(p, use_proxy=use_proxy)
+    context = await create_context(browser)
+    await context.add_init_script(STEALTH_INIT_SCRIPT)
+    page = await context.new_page()
 
     try:
-        resume_file = create_daily_resume_copy(source_path, filename_format)
+        logged_in, reason = await ensure_logged_in(page)
+        if not logged_in:
+            gha_error(f"LOGIN FAILED ({label}) - {reason or 'unknown'}")
+            await dump_failed_page(page, f"login_failure_{label}")
+            return 1
+
+        log.info("Navigating to profile page...")
+        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=GOTO_TIMEOUT)
+        await page.wait_for_load_state("domcontentloaded", timeout=DOM_TIMEOUT)
+        await page.wait_for_timeout(2000)
+
+        block = await detect_bot_block(page)
+        if block:
+            gha_error(f"BLOCKED AFTER LOGIN ({label}) - {block}")
+            await dump_failed_page(page, f"post_login_block_{label}")
+            return 1
+
+        file_input = await find_file_input(page)
+        if not file_input:
+            clicked = await click_upload_trigger(page)
+            if clicked:
+                file_input = await find_file_input(page)
+
+        if not file_input:
+            gha_error(f"FAILED ({label}) - Resume upload field not found")
+            await dump_failed_page(page, f"upload_failure_{label}")
+            return 1
+
+        await file_input.set_input_files(resume_file)
+        await page.wait_for_timeout(3000)
+
+        confirmed = False
+        for text in ["resume uploaded", "upload successful", "resume updated", "uploaded successfully"]:
+            el = await page.query_selector(f'body:has-text("{text}")')
+            if el:
+                confirmed = True
+                break
+
+        fname = os.path.basename(resume_file)
+        if confirmed:
+            log.info(f"SUCCESS ({label}) - Resume uploaded: {fname}")
+            return 0
+
+        gha_warning(
+            f"({label}) File input set ({fname}) but no confirmation text detected. "
+            "May have worked — check Naukri manually."
+        )
+        await dump_failed_page(page, f"upload_unconfirmed_{label}")
+        return 0
+
+    except Exception as e:
+        gha_error(f"ERROR ({label}): {e}")
+        await dump_failed_page(page, f"upload_exception_{label}")
+        return 1
+    finally:
+        await page.close()
+        await browser.close()
+
+
+async def do_resume_upload() -> int:
+    try:
+        resume_file = create_daily_resume_copy(CONFIG["resume_source"], CONFIG["resume_filename_format"])
         log.info(f"Resume copy ready: {resume_file}")
     except FileNotFoundError as e:
         gha_error(f"Resume file error: {e}")
         return 1
 
-    async def run_attempt(p, use_proxy: bool) -> int:
-        browser = await launch_naukri_browser(p, use_proxy=use_proxy)
-        context = await create_naukri_context(browser)
-        await context.add_init_script(STEALTH_INIT_SCRIPT)
-        page = await context.new_page()
-        try:
-            logged_in, reason = await ensure_logged_in(page)
-            if not logged_in:
-                gha_error(f"LOGIN FAILED{' (no proxy)' if not use_proxy else ''} - {reason or 'unknown reason'}")
-                await dump_failed_page(page, "naukri_login_failure" + ("_no_proxy" if not use_proxy else ""))
-                return 1
-
-            await page.goto("https://www.naukri.com/mnjuser/profile", timeout=20000)
-            await page.wait_for_load_state("domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(1000)
-
-            block = await detect_bot_block(page)
-            if block:
-                gha_error(f"BLOCKED AFTER LOGIN{' (no proxy)' if not use_proxy else ''} - {block}")
-                await dump_failed_page(page, "naukri_post_login_block" + ("_no_proxy" if not use_proxy else ""))
-                return 1
-
-            file_input = await find_file_input(page)
-            if not file_input:
-                clicked = await click_upload_trigger(page)
-                if clicked:
-                    file_input = await find_file_input(page)
-
-            if not file_input:
-                gha_error("FAILED - Resume upload field not found on Naukri profile page")
-                await dump_failed_page(page, "naukri_upload_failure" + ("_no_proxy" if not use_proxy else ""))
-                return 1
-
-            await file_input.set_input_files(resume_file)
-            await page.wait_for_timeout(1500)
-
-            confirmed = False
-            for text in ["resume uploaded", "upload successful", "resume updated", "uploaded successfully"]:
-                el = await page.query_selector(f'body:has-text("{text}")')
-                if el:
-                    confirmed = True
-                    break
-
-            fname = os.path.basename(resume_file)
-            if confirmed:
-                log.info(f"SUCCESS - Resume uploaded: {fname}")
-                return 0
-
-            gha_warning(
-                f"Uploaded file input was set ({fname}) but no confirmation text was "
-                "detected on the page. This may still have worked - check Naukri manually "
-                "and update the confirmation-text list if the wording changed."
-            )
-            await dump_failed_page(page, "naukri_upload_unconfirmed" + ("_no_proxy" if not use_proxy else ""))
-            return 0
-
-        except Exception as e:
-            gha_error(f"ERROR during upload{' (no proxy)' if not use_proxy else ''}: {e}")
-            await dump_failed_page(page, "naukri_upload_exception" + ("_no_proxy" if not use_proxy else ""))
-            return 1
-        finally:
-            await page.close()
-            await browser.close()
-
     async with async_playwright() as p:
-        exit_code = await run_attempt(p, use_proxy=True)
-        if exit_code == 1 and CONFIG["proxy_server"]:
-            log.info("Retrying without proxy after proxy login failure")
-            exit_code = await run_attempt(p, use_proxy=False)
+        # Always try direct connection first — it's faster and more reliable
+        # than the free Bright Data proxy. Only use proxy if direct is blocked.
+        exit_code = await run_upload_attempt(p, resume_file, use_proxy=False)
+
+        if exit_code != 0 and CONFIG["proxy_server"]:
+            log.info("Direct attempt failed — retrying via proxy...")
+            exit_code = await run_upload_attempt(p, resume_file, use_proxy=True)
+
         return exit_code
 
 
