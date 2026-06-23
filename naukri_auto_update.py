@@ -325,6 +325,22 @@ async def ensure_logged_in(page) -> tuple[bool, str | None]:
 # ─────────────────────────────────────────────
 
 async def dump_failed_page(page, name: str):
+    # Log title/URL/text snippet straight into the run log first - this works
+    # even if the screenshot step below fails, and needs no artifact download.
+    try:
+        title = await page.title()
+        log.info(f"[{name}] Page title: {title!r}")
+        log.info(f"[{name}] Page URL: {page.url}")
+    except Exception as e:
+        log.error(f"[{name}] Could not read page title/url: {e}")
+
+    try:
+        body_text = await page.inner_text("body", timeout=5000)
+        snippet = " ".join(body_text.split())[:600]
+        log.info(f"[{name}] Page text snippet: {snippet!r}")
+    except Exception as e:
+        log.error(f"[{name}] Could not read page body text: {e}")
+
     try:
         os.makedirs(DEBUG_DIR, exist_ok=True)
         html_path = os.path.join(DEBUG_DIR, f"{name}.html")
@@ -332,13 +348,13 @@ async def dump_failed_page(page, name: str):
         content = await page.content()
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(content)
-        # Bounded timeout + skip waiting on fonts/animations so a slow/stuck
-        # page (e.g. over a slow proxy) doesn't also blow out the debug step.
-        await page.screenshot(path=png_path, full_page=True, timeout=15000, animations="disabled")
         log.info(f"Saved debug page HTML: {html_path}")
+        # Viewport-only screenshot (not full_page) - much less likely to hang
+        # waiting for the entire page's resources/layout to settle.
+        await page.screenshot(path=png_path, full_page=False, timeout=10000, animations="disabled")
         log.info(f"Saved debug page screenshot: {png_path}")
     except Exception as e:
-        log.error(f"Failed to save debug page (non-fatal, continuing): {e}")
+        log.error(f"Failed to save debug screenshot (non-fatal, continuing): {e}")
 
 
 async def find_file_input(page):
