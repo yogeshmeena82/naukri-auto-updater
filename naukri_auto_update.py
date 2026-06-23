@@ -42,6 +42,7 @@ import shutil
 import tempfile
 import schedule
 import time
+import uuid
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -427,9 +428,17 @@ async def do_resume_upload() -> int:
             ],
         }
         if CONFIG["proxy_server"]:
+            proxy_username = CONFIG["proxy_username"]
+            # Bright Data (and similar residential providers) rotate to a new
+            # exit IP on every request by default, which breaks a multi-step
+            # login flow. Appending "-session-<id>" pins one IP for this run.
+            if proxy_username and "-session-" not in proxy_username:
+                session_id = uuid.uuid4().hex[:10]
+                proxy_username = f"{proxy_username}-session-{session_id}"
+                log.info(f"Pinning proxy to a sticky session: ...-session-{session_id}")
             proxy_config = {"server": CONFIG["proxy_server"]}
-            if CONFIG["proxy_username"]:
-                proxy_config["username"] = CONFIG["proxy_username"]
+            if proxy_username:
+                proxy_config["username"] = proxy_username
             if CONFIG["proxy_password"]:
                 proxy_config["password"] = CONFIG["proxy_password"]
             launch_kwargs["proxy"] = proxy_config
