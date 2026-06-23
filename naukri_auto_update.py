@@ -12,11 +12,26 @@ SETUP:
         playwright install chromium
 
   3. Run once to test:
-        python naukri_auto_update.py
+        python naukri_auto_update.py --once
 
   4. To auto-start on Windows boot:
         - Press Win+R -> shell:startup -> Enter
         - Create shortcut to: start_auto_update.bat
+
+CHANGES IN THIS VERSION
+  - Every failure path now exits with a non-zero status code, so a CI run
+    that didn't actually update your resume shows RED instead of a false
+    green checkmark.
+  - Ambiguous "uploaded but couldn't confirm" outcomes still exit 0 (so a
+    wording mismatch doesn't break your pipeline) but print a GitHub
+    Actions ::warning:: annotation so you'll actually notice it.
+  - Added basic anti-bot-detection tweaks (navigator.webdriver override,
+    --disable-blink-features=AutomationControlled) since Naukri can show a
+    CAPTCHA / block to plain headless browsers, especially from datacenter
+    IPs like GitHub-hosted runners.
+  - Cookie-consent banner dismissal before login, since an overlay can
+    silently eat the click on the email/password fields.
+  - Clearer END-OF-RUN summary line so it's the very last thing in the log.
 """
 
 import asyncio
@@ -55,10 +70,13 @@ CONFIG = {
 }
 
 # Schedule times (24-hour)
-SCHEDULE_TIMES = ["09:00",  "09:40", "13:00", "18:00"]
+SCHEDULE_TIMES = ["09:00", "09:40", "13:00", "18:00"]
 
 # Log file
 LOG_FILE = os.path.join(SCRIPT_DIR, "resume_update_log.txt")
+
+# Debug output dirs (also referenced by the GitHub Actions workflow)
+DEBUG_DIR = os.path.join(tempfile.gettempdir(), "naukri_resume_debug")
 
 # ─────────────────────────────────────────────
 # Logging setup — UTF-8 forced to avoid cp1252 errors on Windows
@@ -66,7 +84,6 @@ LOG_FILE = os.path.join(SCRIPT_DIR, "resume_update_log.txt")
 file_handler   = logging.FileHandler(LOG_FILE, encoding="utf-8")
 stream_handler = logging.StreamHandler(sys.stdout)
 
-# Force stdout to utf-8 on Windows
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -76,6 +93,18 @@ logging.basicConfig(
     handlers=[file_handler, stream_handler],
 )
 log = logging.getLogger(__name__)
+
+
+def gha_warning(message: str):
+    """Emit a GitHub Actions warning annotation (no-op outside Actions, just a normal log line)."""
+    log.warning(message)
+    print(f"::warning::{message}")
+
+
+def gha_error(message: str):
+    """Emit a GitHub Actions error annotation."""
+    log.error(message)
+    print(f"::error::{message}")
 
 
 # ─────────────────────────────────────────────
@@ -104,7 +133,7 @@ def resolve_resume_source_path(source_path: str) -> str:
     if os.path.isfile(source_path):
         return source_path
 
-    if os.path.exists(source_path) and os.path.isdir(source_path):
+    if os.path.isdir(source_path):
         for name in ["resume.pdf", "Resume.pdf", "resume.docx", "Resume.docx"]:
             candidate = os.path.join(source_path, name)
             if os.path.isfile(candidate):
@@ -118,33 +147,6 @@ def resolve_resume_source_path(source_path: str) -> str:
             return matches[0]
         raise FileNotFoundError(f"No resume file found in: {source_path}")
 
-    if os.path.isdir(source_path):
-        for name in ["resume.pdf", "Resume.pdf", "resume.docx", "Resume.docx"]:
-            candidate = os.path.join(source_path, name)
-            if os.path.isfile(candidate):
-                return candidate
-        matches = [
-            os.path.join(source_path, f)
-            for f in os.listdir(source_path)
-            if os.path.splitext(f)[1].lower() in {".pdf", ".docx", ".doc"}
-        ]
-        if matches:
-            return matches[0]
-        raise FileNotFoundError(f"No resume file found in: {source_path}")
-    return source_path
-    if os.path.isdir(source_path):
-        for name in ["resume.pdf", "Resume.pdf", "resume.docx", "Resume.docx"]:
-            candidate = os.path.join(source_path, name)
-            if os.path.isfile(candidate):
-                return candidate
-        matches = [
-            os.path.join(source_path, f)
-            for f in os.listdir(source_path)
-            if os.path.splitext(f)[1].lower() in {".pdf", ".docx", ".doc"}
-        ]
-        if matches:
-            return matches[0]
-        raise FileNotFoundError(f"No resume file found in: {source_path}")
     return source_path
 
 
@@ -161,19 +163,76 @@ def create_daily_resume_copy(source_path: str, filename_format: str = None) -> s
 
 
 # ─────────────────────────────────────────────
-# Playwright login (copied from your server.py)
+# Bot-detection mitigation
 # ─────────────────────────────────────────────
 
-async def naukri_login(page) -> bool:
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+window.chrome = { runtime: {} };
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+"""
+
+
+async def dismiss_cookie_banner(page):
+    """Cookie/consent overlays can silently swallow clicks on the fields behind them."""
+    for selector in [
+        'button:has-text("Accept")',
+        'button:has-text("I Accept")',
+        'button:has-text("Got it")',
+        '#wzrk-cancel',
+        '.cookie-banner button',
+    ]:
+        try:
+            btn = await page.query_selector(selector)
+            if btn:
+                await btn.click()
+                await page.wait_for_timeout(500)
+        except Exception:
+            continue
+
+
+async def detect_bot_block(page) -> str | None:
+    """Returns a description if Naukri appears to be showing a CAPTCHA / block page, else None."""
+    try:
+        content = (await page.content()).lower()
+    except Exception:
+        return None
+    indicators = {
+        "captcha": "CAPTCHA challenge detected",
+        "unusual activity": "Naukri flagged unusual activity",
+        "are you a robot": "Bot-check page detected",
+        "access denied": "Access denied page detected",
+        "verify you are human": "Human-verification challenge detected",
+    }
+    for needle, description in indicators.items():
+        if needle in content:
+            return description
+    return None
+
+
+# ─────────────────────────────────────────────
+# Playwright login (copied from your server.py, with stealth + cookie handling)
+# ─────────────────────────────────────────────
+
+async def naukri_login(page) -> tuple[bool, str | None]:
+    """Returns (success, failure_reason)."""
     try:
         await page.goto("https://www.naukri.com/nlogin/login", timeout=30000)
         await page.wait_for_load_state("domcontentloaded", timeout=30000)
     except PlaywrightTimeout:
         pass
 
-    if "login" not in page.url and "nlogin" not in page.url:
-        return True
+    block = await detect_bot_block(page)
+    if block:
+        return False, block
 
+    await dismiss_cookie_banner(page)
+
+    if "login" not in page.url and "nlogin" not in page.url:
+        return True, None
+
+    email_filled = False
     for selector in [
         'input[placeholder="Enter your active Email ID / Username"]',
         'input[type="email"]', 'input[name="username"]', '#usernameField',
@@ -182,10 +241,12 @@ async def naukri_login(page) -> bool:
             field = await page.wait_for_selector(selector, timeout=5000)
             await field.click()
             await field.fill(CONFIG["email"])
+            email_filled = True
             break
         except PlaywrightTimeout:
             continue
 
+    password_filled = False
     for selector in [
         'input[placeholder="Enter your password"]',
         'input[type="password"]', 'input[name="password"]', '#passwordField',
@@ -194,10 +255,15 @@ async def naukri_login(page) -> bool:
             field = await page.wait_for_selector(selector, timeout=5000)
             await field.click()
             await field.fill(CONFIG["password"])
+            password_filled = True
             break
         except PlaywrightTimeout:
             continue
 
+    if not email_filled or not password_filled:
+        return False, "Could not find email/password fields (selectors may be outdated)"
+
+    clicked_submit = False
     for selector in [
         'button[type="submit"]', 'button.loginButton',
         'button:has-text("Login")', 'input[type="submit"]',
@@ -206,11 +272,20 @@ async def naukri_login(page) -> bool:
             btn = await page.wait_for_selector(selector, timeout=5000)
             if btn:
                 await btn.click()
+                clicked_submit = True
                 break
         except PlaywrightTimeout:
             continue
 
+    if not clicked_submit:
+        return False, "Could not find/click the login submit button"
+
     await page.wait_for_timeout(2000)
+
+    block = await detect_bot_block(page)
+    if block:
+        return False, block
+
     try:
         await page.wait_for_url(
             lambda url: "login" not in url and "nlogin" not in url,
@@ -219,15 +294,22 @@ async def naukri_login(page) -> bool:
     except PlaywrightTimeout:
         pass
 
-    return "login" not in page.url and "nlogin" not in page.url
+    if "login" in page.url or "nlogin" in page.url:
+        # Check once more for a bot block / wrong-credentials message before giving up.
+        block = await detect_bot_block(page)
+        if block:
+            return False, block
+        return False, "Still on login page after submit (wrong credentials, or page changed)"
+
+    return True, None
 
 
-async def ensure_logged_in(page) -> bool:
+async def ensure_logged_in(page) -> tuple[bool, str | None]:
     try:
         await page.goto("https://www.naukri.com/mnjuser/profile", timeout=20000)
         await page.wait_for_load_state("domcontentloaded", timeout=20000)
         if "mnjuser" in page.url and "login" not in page.url:
-            return True
+            return True, None
     except PlaywrightTimeout:
         pass
     return await naukri_login(page)
@@ -239,10 +321,9 @@ async def ensure_logged_in(page) -> bool:
 
 async def dump_failed_page(page, name: str):
     try:
-        debug_dir = os.path.join(tempfile.gettempdir(), "naukri_resume_debug")
-        os.makedirs(debug_dir, exist_ok=True)
-        html_path = os.path.join(debug_dir, f"{name}.html")
-        png_path = os.path.join(debug_dir, f"{name}.png")
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        html_path = os.path.join(DEBUG_DIR, f"{name}.html")
+        png_path = os.path.join(DEBUG_DIR, f"{name}.png")
         content = await page.content()
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -318,7 +399,8 @@ async def click_upload_trigger(page):
     return False
 
 
-async def do_resume_upload():
+async def do_resume_upload() -> int:
+    """Returns a process exit code: 0 = success/ambiguous-but-ok, 1 = confirmed failure."""
     source_path     = CONFIG["resume_source"]
     filename_format = CONFIG["resume_filename_format"]
 
@@ -326,29 +408,46 @@ async def do_resume_upload():
         resume_file = create_daily_resume_copy(source_path, filename_format)
         log.info(f"Resume copy ready: {resume_file}")
     except FileNotFoundError as e:
-        log.error(f"Resume file error: {e}")
-        return
+        gha_error(f"Resume file error: {e}")
+        return 1
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=CONFIG["headless"],
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+            ],
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
             viewport={"width": 1920, "height": 1080},
+            locale="en-US",
         )
+        await context.add_init_script(STEALTH_INIT_SCRIPT)
         page = await context.new_page()
 
+        exit_code = 1
         try:
-            logged_in = await ensure_logged_in(page)
+            logged_in, reason = await ensure_logged_in(page)
             if not logged_in:
-                log.error("LOGIN FAILED - check NAUKRI_EMAIL / NAUKRI_PASSWORD in .env")
-                return
+                gha_error(f"LOGIN FAILED - {reason or 'unknown reason'}")
+                await dump_failed_page(page, "naukri_login_failure")
+                return 1
 
             await page.goto("https://www.naukri.com/mnjuser/profile")
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(3000)
+
+            block = await detect_bot_block(page)
+            if block:
+                gha_error(f"BLOCKED AFTER LOGIN - {block}")
+                await dump_failed_page(page, "naukri_post_login_block")
+                return 1
 
             file_input = await find_file_input(page)
             if not file_input:
@@ -357,10 +456,9 @@ async def do_resume_upload():
                     file_input = await find_file_input(page)
 
             if not file_input:
-                log.error("FAILED - Resume upload field not found on Naukri profile page")
+                gha_error("FAILED - Resume upload field not found on Naukri profile page")
                 await dump_failed_page(page, "naukri_upload_failure")
-                log.error("Saved page HTML and screenshot for debugging.")
-                return
+                return 1
 
             await file_input.set_input_files(resume_file)
             await page.wait_for_timeout(5000)
@@ -375,12 +473,22 @@ async def do_resume_upload():
             fname = os.path.basename(resume_file)
             if confirmed:
                 log.info(f"SUCCESS - Resume uploaded: {fname}")
+                exit_code = 0
             else:
-                log.info(f"DONE - Resume uploaded (no confirmation text detected): {fname}")
+                gha_warning(
+                    f"Uploaded file input was set ({fname}) but no confirmation text was "
+                    "detected on the page. This may still have worked - check Naukri manually "
+                    "and update the confirmation-text list if the wording changed."
+                )
+                await dump_failed_page(page, "naukri_upload_unconfirmed")
+                exit_code = 0  # don't fail the job on wording-mismatch alone
+
+            return exit_code
 
         except Exception as e:
-            log.error(f"ERROR during upload: {e}")
+            gha_error(f"ERROR during upload: {e}")
             await dump_failed_page(page, "naukri_upload_exception")
+            return 1
         finally:
             await page.close()
             await browser.close()
@@ -390,9 +498,14 @@ async def do_resume_upload():
 # Scheduler
 # ─────────────────────────────────────────────
 
-def run_update():
+def run_update() -> int:
     log.info("Scheduled resume update triggered")
-    asyncio.run(do_resume_upload())
+    code = asyncio.run(do_resume_upload())
+    if code == 0:
+        log.info("RUN SUMMARY: resume update completed OK")
+    else:
+        gha_error("RUN SUMMARY: resume update FAILED - see errors above / debug artifacts")
+    return code
 
 
 def main():
@@ -415,14 +528,14 @@ def main():
         time.sleep(30)
 
 
-import argparse
-
 if __name__ == "__main__":
+    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
     if args.once:
-        asyncio.run(do_resume_upload())
+        exit_code = run_update()
+        sys.exit(exit_code)
     else:
         main()
