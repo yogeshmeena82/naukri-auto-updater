@@ -176,6 +176,12 @@ Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 window.chrome = { runtime: {} };
 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
 Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+Object.defineProperty(navigator, 'product', { get: () => 'Gecko' });
+Object.defineProperty(navigator, 'productSub', { get: () => '20030107' });
 """
 
 
@@ -187,6 +193,7 @@ async def dismiss_cookie_banner(page):
         'button:has-text("Got it")',
         '#wzrk-cancel',
         '.cookie-banner button',
+        'button:has-text("Agree")',
     ]:
         try:
             btn = await page.query_selector(selector)
@@ -208,12 +215,42 @@ async def detect_bot_block(page) -> str | None:
         "unusual activity": "Naukri flagged unusual activity",
         "are you a robot": "Bot-check page detected",
         "access denied": "Access denied page detected",
+        "request blocked": "Access blocked by Naukri / bot detection",
         "verify you are human": "Human-verification challenge detected",
+        "forbidden": "Access forbidden page detected",
     }
     for needle, description in indicators.items():
         if needle in content:
             return description
     return None
+
+
+async def is_blocked_page(page) -> tuple[bool, str | None]:
+    """Detect a blocked / access-denied landing page before trying selectors."""
+    try:
+        title = (await page.title() or "").lower()
+        if any(blocked in title for blocked in ["access denied", "blocked", "forbidden", "error"]):
+            return True, f"Blocked page detected by title: {title}"
+    except Exception:
+        pass
+
+    try:
+        body = (await page.text_content("body") or "").lower()
+        if any(blocked in body for blocked in ["access denied", "blocked", "forbidden", "request blocked"]):
+            return True, "Blocked page detected by body text"
+    except Exception:
+        pass
+
+    return False, None
+
+
+async def wait_for_any_selector(page, selectors, timeout=10000):
+    """Wait for the first matching element in a CSS selector list."""
+    selector = ", ".join(selectors)
+    try:
+        return await page.wait_for_selector(selector, timeout=timeout)
+    except PlaywrightTimeout:
+        return None
 
 
 # ─────────────────────────────────────────────
@@ -223,10 +260,14 @@ async def detect_bot_block(page) -> str | None:
 async def naukri_login(page) -> tuple[bool, str | None]:
     """Returns (success, failure_reason)."""
     try:
-        await page.goto("https://www.naukri.com/nlogin/login", timeout=60000)
-        await page.wait_for_load_state("domcontentloaded", timeout=60000)
+        await page.goto("https://www.naukri.com/nlogin/login", timeout=30000)
+        await page.wait_for_load_state("domcontentloaded", timeout=30000)
     except PlaywrightTimeout:
         pass
+
+    blocked, reason = await is_blocked_page(page)
+    if blocked:
+        return False, reason
 
     block = await detect_bot_block(page)
     if block:
@@ -237,73 +278,57 @@ async def naukri_login(page) -> tuple[bool, str | None]:
     if "login" not in page.url and "nlogin" not in page.url:
         return True, None
 
-    email_filled = False
-    for selector in [
-        'input[placeholder="Enter your active Email ID / Username"]',
-        'input[type="email"]', 'input[name="username"]', '#usernameField',
-    ]:
-        try:
-            field = await page.wait_for_selector(selector, timeout=20000)
-            await field.click()
-            await field.fill(CONFIG["email"])
-            email_filled = True
-            break
-        except PlaywrightTimeout:
-            continue
+    email_selectors = [
+        'input#usernameField',
+        'input[placeholder*="Email" i]',
+        'input[placeholder*="Username" i]',
+        'input[type="email"]',
+        'input[name*="user" i]',
+    ]
+    email_field = await wait_for_any_selector(page, email_selectors, timeout=10000)
+    if email_field:
+        await email_field.click()
+        await email_field.fill(CONFIG["email"])
 
-    password_filled = False
-    for selector in [
-        'input[placeholder="Enter your password"]',
-        'input[type="password"]', 'input[name="password"]', '#passwordField',
-    ]:
-        try:
-            field = await page.wait_for_selector(selector, timeout=20000)
-            await field.click()
-            await field.fill(CONFIG["password"])
-            password_filled = True
-            break
-        except PlaywrightTimeout:
-            continue
+    password_selectors = [
+        'input#passwordField',
+        'input[placeholder*="Password" i]',
+        'input[type="password"]',
+        'input[name*="pass" i]',
+    ]
+    password_field = await wait_for_any_selector(page, password_selectors, timeout=10000)
+    if password_field:
+        await password_field.click()
+        await password_field.fill(CONFIG["password"])
 
-    if not email_filled or not password_filled:
+    if not email_field or not password_field:
         return False, "Could not find email/password fields (selectors may be outdated)"
 
-    clicked_submit = False
-    for selector in [
-        'button[type="submit"]', 'button.loginButton',
-        'button:has-text("Login")', 'input[type="submit"]',
-    ]:
-        try:
-            btn = await page.wait_for_selector(selector, timeout=20000)
-            if btn:
-                await btn.click()
-                clicked_submit = True
-                break
-        except PlaywrightTimeout:
-            continue
-
-    if not clicked_submit:
+    submit_selectors = [
+        'button[type="submit"]',
+        'button.loginButton',
+        'button:has-text("Login")',
+        'input[type="submit"]',
+    ]
+    submit_button = await wait_for_any_selector(page, submit_selectors, timeout=10000)
+    if not submit_button:
         return False, "Could not find/click the login submit button"
 
-    await page.wait_for_timeout(3000)
+    await submit_button.click()
+
+    try:
+        await page.wait_for_url(
+            lambda url: "login" not in url and "nlogin" not in url,
+            timeout=15000,
+        )
+    except PlaywrightTimeout:
+        pass
 
     block = await detect_bot_block(page)
     if block:
         return False, block
 
-    try:
-        await page.wait_for_url(
-            lambda url: "login" not in url and "nlogin" not in url,
-            timeout=30000
-        )
-    except PlaywrightTimeout:
-        pass
-
     if "login" in page.url or "nlogin" in page.url:
-        # Check once more for a bot block / wrong-credentials message before giving up.
-        block = await detect_bot_block(page)
-        if block:
-            return False, block
         return False, "Still on login page after submit (wrong credentials, or page changed)"
 
     return True, None
@@ -311,8 +336,8 @@ async def naukri_login(page) -> tuple[bool, str | None]:
 
 async def ensure_logged_in(page) -> tuple[bool, str | None]:
     try:
-        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=45000)
-        await page.wait_for_load_state("domcontentloaded", timeout=45000)
+        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=20000)
+        await page.wait_for_load_state("domcontentloaded", timeout=20000)
         if "mnjuser" in page.url and "login" not in page.url:
             return True, None
     except PlaywrightTimeout:
@@ -335,9 +360,12 @@ async def dump_failed_page(page, name: str):
         log.error(f"[{name}] Could not read page title/url: {e}")
 
     try:
-        body_text = await page.inner_text("body", timeout=5000)
-        snippet = " ".join(body_text.split())[:600]
-        log.info(f"[{name}] Page text snippet: {snippet!r}")
+        body_text = await page.text_content("body")
+        if body_text:
+            snippet = " ".join(body_text.split())[:600]
+            log.info(f"[{name}] Page text snippet: {snippet!r}")
+        else:
+            log.info(f"[{name}] Page body text was empty")
     except Exception as e:
         log.error(f"[{name}] Could not read page body text: {e}")
 
@@ -349,9 +377,12 @@ async def dump_failed_page(page, name: str):
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(content)
         log.info(f"Saved debug page HTML: {html_path}")
-        # Viewport-only screenshot (not full_page) - much less likely to hang
-        # waiting for the entire page's resources/layout to settle.
-        await page.screenshot(path=png_path, full_page=False, timeout=10000, animations="disabled")
+        await page.screenshot(
+            path=png_path,
+            full_page=False,
+            timeout=20000,
+            animations="disabled",
+        )
         log.info(f"Saved debug page screenshot: {png_path}")
     except Exception as e:
         log.error(f"Failed to save debug screenshot (non-fatal, continuing): {e}")
@@ -379,6 +410,7 @@ async def find_file_input(page):
                 return file_input
         except Exception:
             continue
+
     for frame in page.frames:
         for selector in selectors_to_try:
             try:
@@ -388,6 +420,7 @@ async def find_file_input(page):
                     return file_input
             except Exception:
                 continue
+
     return None
 
 
@@ -415,7 +448,7 @@ async def click_upload_trigger(page):
             if upload_btn:
                 log.info(f"Clicking upload trigger selector: {selector}")
                 await upload_btn.click()
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(1000)
                 return True
         except Exception:
             continue
@@ -441,6 +474,9 @@ async def do_resume_upload() -> int:
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--window-size=1920,1080",
             ],
         }
         if CONFIG["proxy_server"]:
@@ -470,6 +506,8 @@ async def do_resume_upload() -> int:
             ),
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
+            timezone_id="Asia/Kolkata",
+            extra_http_headers={"accept-language": "en-US,en;q=0.9"},
         )
         await context.add_init_script(STEALTH_INIT_SCRIPT)
         page = await context.new_page()
@@ -482,9 +520,9 @@ async def do_resume_upload() -> int:
                 await dump_failed_page(page, "naukri_login_failure")
                 return 1
 
-            await page.goto("https://www.naukri.com/mnjuser/profile")
-            await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(3000)
+            await page.goto("https://www.naukri.com/mnjuser/profile", timeout=20000)
+            await page.wait_for_load_state("domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(1000)
 
             block = await detect_bot_block(page)
             if block:
@@ -504,7 +542,7 @@ async def do_resume_upload() -> int:
                 return 1
 
             await file_input.set_input_files(resume_file)
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(1500)
 
             confirmed = False
             for text in ["resume uploaded", "upload successful", "resume updated", "uploaded successfully"]:
