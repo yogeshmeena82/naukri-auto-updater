@@ -223,8 +223,8 @@ async def detect_bot_block(page) -> str | None:
 async def naukri_login(page) -> tuple[bool, str | None]:
     """Returns (success, failure_reason)."""
     try:
-        await page.goto("https://www.naukri.com/nlogin/login", timeout=60000)
-        await page.wait_for_load_state("domcontentloaded", timeout=60000)
+        await page.goto("https://www.naukri.com/nlogin/login", timeout=6000)
+        await page.wait_for_load_state("domcontentloaded", timeout=6000)
     except PlaywrightTimeout:
         pass
 
