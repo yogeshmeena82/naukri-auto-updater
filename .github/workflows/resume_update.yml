@@ -1,31 +1,52 @@
 name: Naukri Resume Auto-Update
+
 on:
   schedule:
-    - cron: '30 3 * * *'   # 9:00 AM IST  (IST = UTC+5:30)
-    - cron: '10 4 * * *'   # 9:40 AM IST
-    - cron: '30 7 * * *'   # 1:00 PM IST
-    - cron: '30 12 * * *'  # 6:00 PM IST
-  workflow_dispatch:         # allows manual trigger anytime
+    # Times are UTC. Adjust if you want these to line up with IST 9AM/1PM/6PM.
+    - cron: "30 3 * * *"   # ~09:00 IST
+    - cron: "10 4 * * *"   # ~09:40 IST
+    - cron: "30 7 * * *"   # ~13:00 IST
+    - cron: "30 12 * * *"  # ~18:00 IST
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab to test
+
 jobs:
   update-resume:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          playwright install chromium
-          playwright install-deps chromium
-      - name: Run Resume Update
+          playwright install chromium --with-deps
+
+      - name: Run Naukri resume updater
+        id: update
         env:
           NAUKRI_EMAIL: ${{ secrets.NAUKRI_EMAIL }}
           NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
           NAUKRI_HEADLESS: "true"
-          NAUKRI_RESUME_SOURCE: "resume/"
-          NAUKRI_RESUME_FILENAME_FORMAT: "VriseResume_{day}{mon}{year}"
+          NAUKRI_RESUME_SOURCE: "./resume.pdf"
         run: python naukri_auto_update.py --once
+
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-debug-${{ github.run_id }}
+          path: |
+            /tmp/naukri_resume_debug/
+            resume_update_log.txt
+          retention-days: 7
+
+      - name: Upload log (always, even on success)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-log-${{ github.run_id }}
+          path: resume_update_log.txt
+          retention-days: 7
