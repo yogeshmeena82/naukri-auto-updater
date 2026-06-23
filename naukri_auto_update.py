@@ -222,8 +222,8 @@ async def detect_bot_block(page) -> str | None:
 async def naukri_login(page) -> tuple[bool, str | None]:
     """Returns (success, failure_reason)."""
     try:
-        await page.goto("https://www.naukri.com/nlogin/login", timeout=30000)
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        await page.goto("https://www.naukri.com/nlogin/login", timeout=60000)
+        await page.wait_for_load_state("domcontentloaded", timeout=60000)
     except PlaywrightTimeout:
         pass
 
@@ -242,7 +242,7 @@ async def naukri_login(page) -> tuple[bool, str | None]:
         'input[type="email"]', 'input[name="username"]', '#usernameField',
     ]:
         try:
-            field = await page.wait_for_selector(selector, timeout=5000)
+            field = await page.wait_for_selector(selector, timeout=20000)
             await field.click()
             await field.fill(CONFIG["email"])
             email_filled = True
@@ -256,7 +256,7 @@ async def naukri_login(page) -> tuple[bool, str | None]:
         'input[type="password"]', 'input[name="password"]', '#passwordField',
     ]:
         try:
-            field = await page.wait_for_selector(selector, timeout=5000)
+            field = await page.wait_for_selector(selector, timeout=20000)
             await field.click()
             await field.fill(CONFIG["password"])
             password_filled = True
@@ -273,7 +273,7 @@ async def naukri_login(page) -> tuple[bool, str | None]:
         'button:has-text("Login")', 'input[type="submit"]',
     ]:
         try:
-            btn = await page.wait_for_selector(selector, timeout=5000)
+            btn = await page.wait_for_selector(selector, timeout=20000)
             if btn:
                 await btn.click()
                 clicked_submit = True
@@ -284,7 +284,7 @@ async def naukri_login(page) -> tuple[bool, str | None]:
     if not clicked_submit:
         return False, "Could not find/click the login submit button"
 
-    await page.wait_for_timeout(2000)
+    await page.wait_for_timeout(3000)
 
     block = await detect_bot_block(page)
     if block:
@@ -293,7 +293,7 @@ async def naukri_login(page) -> tuple[bool, str | None]:
     try:
         await page.wait_for_url(
             lambda url: "login" not in url and "nlogin" not in url,
-            timeout=15000
+            timeout=30000
         )
     except PlaywrightTimeout:
         pass
@@ -310,8 +310,8 @@ async def naukri_login(page) -> tuple[bool, str | None]:
 
 async def ensure_logged_in(page) -> tuple[bool, str | None]:
     try:
-        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=20000)
-        await page.wait_for_load_state("domcontentloaded", timeout=20000)
+        await page.goto("https://www.naukri.com/mnjuser/profile", timeout=45000)
+        await page.wait_for_load_state("domcontentloaded", timeout=45000)
         if "mnjuser" in page.url and "login" not in page.url:
             return True, None
     except PlaywrightTimeout:
@@ -331,11 +331,13 @@ async def dump_failed_page(page, name: str):
         content = await page.content()
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(content)
-        await page.screenshot(path=png_path, full_page=True)
+        # Bounded timeout + skip waiting on fonts/animations so a slow/stuck
+        # page (e.g. over a slow proxy) doesn't also blow out the debug step.
+        await page.screenshot(path=png_path, full_page=True, timeout=15000, animations="disabled")
         log.info(f"Saved debug page HTML: {html_path}")
         log.info(f"Saved debug page screenshot: {png_path}")
     except Exception as e:
-        log.error(f"Failed to save debug page: {e}")
+        log.error(f"Failed to save debug page (non-fatal, continuing): {e}")
 
 
 async def find_file_input(page):
