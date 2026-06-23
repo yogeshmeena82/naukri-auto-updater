@@ -258,8 +258,7 @@ async def _fill_field(page, selectors: list[str], value: str, field_label: str) 
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return true;
-                }})()
-            """, value)
+                }})()"", value)
             if filled:
                 log.info(f"Filled {field_label} via JS with selector: {selector}")
                 return True
