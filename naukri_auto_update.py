@@ -182,6 +182,18 @@ Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
 Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
 Object.defineProperty(navigator, 'product', { get: () => 'Gecko' });
 Object.defineProperty(navigator, 'productSub', { get: () => '20030107' });
+Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+Object.defineProperty(navigator, 'permissions', {
+    get: () => ({
+        query: (parameters) =>
+            Promise.resolve({ state: 'prompt', onchange: null }),
+    }),
+});
+window.navigator.userAgentData = {
+    brands: [{ brand: 'Chromium', version: '124' }, { brand: 'Google Chrome', version: '124' }],
+    mobile: false,
+    platform: 'Windows',
+};
 """
 
 
@@ -218,6 +230,8 @@ async def detect_bot_block(page) -> str | None:
         "request blocked": "Access blocked by Naukri / bot detection",
         "verify you are human": "Human-verification challenge detected",
         "forbidden": "Access forbidden page detected",
+        "not authorized": "Access denied page detected",
+        "you don't have permission": "Permission denied page detected",
     }
     for needle, description in indicators.items():
         if needle in content:
@@ -302,6 +316,9 @@ async def naukri_login(page) -> tuple[bool, str | None]:
         await password_field.fill(CONFIG["password"])
 
     if not email_field or not password_field:
+        content = (await page.content()).lower()
+        if any(term in content for term in ["access denied", "blocked", "forbidden", "request blocked", "not authorized", "you don't have permission"]):
+            return False, "Access denied / blocked page detected"
         return False, "Could not find email/password fields (selectors may be outdated)"
 
     submit_selectors = [
@@ -455,6 +472,60 @@ async def click_upload_trigger(page):
     return False
 
 
+async def launch_naukri_browser(p, use_proxy: bool):
+    launch_kwargs = {
+        "headless": CONFIG["headless"],
+        "args": [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--window-size=1920,1080",
+        ],
+    }
+    if use_proxy and CONFIG["proxy_server"]:
+        proxy_username = CONFIG["proxy_username"]
+        if proxy_username and "-session-" not in proxy_username:
+            session_id = uuid.uuid4().hex[:10]
+            proxy_username = f"{proxy_username}-session-{session_id}"
+            log.info(f"Pinning proxy to a sticky session: ...-session-{session_id}")
+        proxy_config = {"server": CONFIG["proxy_server"]}
+        if proxy_username:
+            proxy_config["username"] = proxy_username
+        if CONFIG["proxy_password"]:
+            proxy_config["password"] = CONFIG["proxy_password"]
+        launch_kwargs["proxy"] = proxy_config
+        log.info(f"Using proxy: {CONFIG['proxy_server']}")
+    elif use_proxy:
+        log.info("Proxy configured but no proxy server is provided; connecting directly")
+    else:
+        log.info("Connecting directly without proxy")
+    return await p.chromium.launch(**launch_kwargs)
+
+
+async def create_naukri_context(browser):
+    return await browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1920, "height": 1080},
+        locale="en-US",
+        timezone_id="Asia/Kolkata",
+        extra_http_headers={
+            "accept-language": "en-US,en;q=0.9",
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "upgrade-insecure-requests": "1",
+            "sec-fetch-site": "none",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-user": "?1",
+            "sec-fetch-dest": "document",
+        },
+        ignore_https_errors=True,
+    )
+
+
 async def do_resume_upload() -> int:
     """Returns a process exit code: 0 = success/ambiguous-but-ok, 1 = confirmed failure."""
     source_path     = CONFIG["resume_source"]
@@ -467,57 +538,16 @@ async def do_resume_upload() -> int:
         gha_error(f"Resume file error: {e}")
         return 1
 
-    async with async_playwright() as p:
-        launch_kwargs = {
-            "headless": CONFIG["headless"],
-            "args": [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--window-size=1920,1080",
-            ],
-        }
-        if CONFIG["proxy_server"]:
-            proxy_username = CONFIG["proxy_username"]
-            # Bright Data (and similar residential providers) rotate to a new
-            # exit IP on every request by default, which breaks a multi-step
-            # login flow. Appending "-session-<id>" pins one IP for this run.
-            if proxy_username and "-session-" not in proxy_username:
-                session_id = uuid.uuid4().hex[:10]
-                proxy_username = f"{proxy_username}-session-{session_id}"
-                log.info(f"Pinning proxy to a sticky session: ...-session-{session_id}")
-            proxy_config = {"server": CONFIG["proxy_server"]}
-            if proxy_username:
-                proxy_config["username"] = proxy_username
-            if CONFIG["proxy_password"]:
-                proxy_config["password"] = CONFIG["proxy_password"]
-            launch_kwargs["proxy"] = proxy_config
-            log.info(f"Using proxy: {CONFIG['proxy_server']}")
-        else:
-            log.info("No proxy configured - connecting directly")
-
-        browser = await p.chromium.launch(**launch_kwargs)
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="Asia/Kolkata",
-            extra_http_headers={"accept-language": "en-US,en;q=0.9"},
-        )
+    async def run_attempt(p, use_proxy: bool) -> int:
+        browser = await launch_naukri_browser(p, use_proxy=use_proxy)
+        context = await create_naukri_context(browser)
         await context.add_init_script(STEALTH_INIT_SCRIPT)
         page = await context.new_page()
-
-        exit_code = 1
         try:
             logged_in, reason = await ensure_logged_in(page)
             if not logged_in:
-                gha_error(f"LOGIN FAILED - {reason or 'unknown reason'}")
-                await dump_failed_page(page, "naukri_login_failure")
+                gha_error(f"LOGIN FAILED{' (no proxy)' if not use_proxy else ''} - {reason or 'unknown reason'}")
+                await dump_failed_page(page, "naukri_login_failure" + ("_no_proxy" if not use_proxy else ""))
                 return 1
 
             await page.goto("https://www.naukri.com/mnjuser/profile", timeout=20000)
@@ -526,8 +556,8 @@ async def do_resume_upload() -> int:
 
             block = await detect_bot_block(page)
             if block:
-                gha_error(f"BLOCKED AFTER LOGIN - {block}")
-                await dump_failed_page(page, "naukri_post_login_block")
+                gha_error(f"BLOCKED AFTER LOGIN{' (no proxy)' if not use_proxy else ''} - {block}")
+                await dump_failed_page(page, "naukri_post_login_block" + ("_no_proxy" if not use_proxy else ""))
                 return 1
 
             file_input = await find_file_input(page)
@@ -538,7 +568,7 @@ async def do_resume_upload() -> int:
 
             if not file_input:
                 gha_error("FAILED - Resume upload field not found on Naukri profile page")
-                await dump_failed_page(page, "naukri_upload_failure")
+                await dump_failed_page(page, "naukri_upload_failure" + ("_no_proxy" if not use_proxy else ""))
                 return 1
 
             await file_input.set_input_files(resume_file)
@@ -554,25 +584,30 @@ async def do_resume_upload() -> int:
             fname = os.path.basename(resume_file)
             if confirmed:
                 log.info(f"SUCCESS - Resume uploaded: {fname}")
-                exit_code = 0
-            else:
-                gha_warning(
-                    f"Uploaded file input was set ({fname}) but no confirmation text was "
-                    "detected on the page. This may still have worked - check Naukri manually "
-                    "and update the confirmation-text list if the wording changed."
-                )
-                await dump_failed_page(page, "naukri_upload_unconfirmed")
-                exit_code = 0  # don't fail the job on wording-mismatch alone
+                return 0
 
-            return exit_code
+            gha_warning(
+                f"Uploaded file input was set ({fname}) but no confirmation text was "
+                "detected on the page. This may still have worked - check Naukri manually "
+                "and update the confirmation-text list if the wording changed."
+            )
+            await dump_failed_page(page, "naukri_upload_unconfirmed" + ("_no_proxy" if not use_proxy else ""))
+            return 0
 
         except Exception as e:
-            gha_error(f"ERROR during upload: {e}")
-            await dump_failed_page(page, "naukri_upload_exception")
+            gha_error(f"ERROR during upload{' (no proxy)' if not use_proxy else ''}: {e}")
+            await dump_failed_page(page, "naukri_upload_exception" + ("_no_proxy" if not use_proxy else ""))
             return 1
         finally:
             await page.close()
             await browser.close()
+
+    async with async_playwright() as p:
+        exit_code = await run_attempt(p, use_proxy=True)
+        if exit_code == 1 and CONFIG["proxy_server"]:
+            log.info("Retrying without proxy after proxy login failure")
+            exit_code = await run_attempt(p, use_proxy=False)
+        return exit_code
 
 
 # ─────────────────────────────────────────────
